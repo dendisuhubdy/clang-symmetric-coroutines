@@ -3291,6 +3291,9 @@ void Parser::ParseDeclarationSpecifiers(DeclSpec &DS,
         }
       }
 
+      if (Tok.is(tok::identifier) && !MaybeParseSymmetricCoroutine(DS))
+        goto DoneWithDeclSpec;
+
       // In C++, check to see if this is a scope specifier like foo::bar::, if
       // so handle it as such.  This is important for ctor parsing.
       if (getLangOpts().CPlusPlus) {

@@ -1343,6 +1343,303 @@ bool Parser::isValidAfterTypeSpecifier(bool CouldBeBitfield) {
   return false;
 }
 
+bool Parser::MaybeParseSymmetricCoroutine(DeclSpec &DS) {
+  assert(Tok.is(tok::identifier) && "Only call this function at an identifier token");
+
+  if (!getLangOpts().CPlusPlus || NextToken().isNot(tok::l_paren))
+    return true;
+
+  // Only accept a coroutine definition where declarations are accepted. Most
+  // notably, don't try to parse the memeber initializers of constructors as
+  // coroutines.
+//  if (!getCurScope()->isFunctionPrototypeScope())  {
+//    return true;
+//  }
+
+  // TODO: Consider treating the coroutine body as a lambda with no captures.
+  // If we add the base class syntax to the lambda expression, we can use this
+  // to define coroutuine lambda syntax.
+
+  // 1. Parse the syntax up to the opening brace to ensure that this is neither
+  //    a function call, nor a constructor definition.
+  TentativeParsingAction TPA(*this);
+
+  IdentifierInfo *name = Tok.getIdentifierInfo();
+  SourceLocation nameLoc = ConsumeToken();
+
+  // Consume the parenthesis-enclosed parameter list
+  // TODO: Does this need to be a separate scope???
+  BalancedDelimiterTracker BDT(*this, tok::l_paren);
+
+  if (BDT.consumeOpen()) {
+    TPA.Revert();
+    return true;
+  }
+  
+  SourceLocation EllipsisLoc;
+  SmallVector<DeclaratorChunk::ParamInfo, 16> ParamInfo ;
+  Declarator Params(DS, DeclaratorContext::BlockContext);
+  ParsedAttributes FirstArgAttrs(AttrFactory);
+
+  // TODO: Don't accept elipses (maybe accept them for variadic templates???)
+  if (Tok.isNot(tok::r_paren))
+    ParseParameterDeclarationClause(Params, FirstArgAttrs, ParamInfo, EllipsisLoc);
+
+  if (BDT.consumeClose()) {
+    TPA.Revert();
+    return true;
+  }
+
+  // TODO: Consider accepting an exception specification before or after the colon
+
+  // Consume the colon
+  if (!TryConsumeToken(tok::colon)) {
+    TPA.Revert();
+    return true;
+  }
+
+  // Parse the base class name
+  SourceLocation BaseLocStart;
+  SourceLocation BaseLocEnd;
+  TypeResult BaseType = ParseBaseTypeSpecifier(BaseLocStart, BaseLocEnd);
+  if (BaseType.isInvalid()) {
+    TPA.Revert();
+    return true;
+  }
+
+  // At this point we have eliminated both function calls and constructor
+  // definitions and we are definitely parsing a coroutine definition.
+  TPA.Commit();
+
+  // 2. Start constructing the class definition.
+  CXXScopeSpec &nameScope = DS.getTypeSpecScope();
+  ParsedAttributesWithRange attrs(AttrFactory);
+  MultiTemplateParamsArg templParams;
+  bool isOwned = false;
+  bool isDependent = false;
+  Sema::SkipBodyInfo SkipBody;
+
+  // Emit the class "tag"
+  DeclResult classDecl = Actions.ActOnTag(
+    getCurScope(), // The scope (TODO: check what it means)
+    DeclSpec::TST_class, // This is a class ...
+    Sema::TUK_Definition, // ... and we are defining it
+    nameLoc, // This should be the location of the keyword in the source code
+    nameScope, // The scope for a fully qualified name. For now we are not supporting delayed definition.
+    name, // The name of the class we are generating ...
+    nameLoc, // ... and the source location of the name
+    attrs, // Class attributes - none for now, we may start accepting them.
+    AS_none, // No access specifier (guess it only matters in a reference to the class, not in its definition)
+    DS.getModulePrivateSpecLoc(), // TODO: Something about modules, may need to look into it
+    templParams, // Template parameters (TODO: will probably need to look into it when we are specializing or instantiating template coroutines)
+    isOwned, // Probably tells us if we own the declaration - i.e. if we should destroy it (TODO: look into it)
+    isDependent, // Whether it is a dependent type.
+    SourceLocation(), // The source location of teh enum keyword for enums, not relevant for out case.
+    false, // Enum related - not relevant for this case.
+    clang::TypeResult(), // The underlying type of a class enum - not relevant here.
+    false, // It's not a type specifier
+    false, // It's not a template param or argument
+    &SkipBody); // Will tell us whether to skip parsing the body. Should tell us not.
+
+  if (!classDecl.isUsable())
+    Diag(Tok.getLocation(), diag::error_coroutine_semantic_action_failed) << "Couldn't create the class tag declaration";
+  // 3. Enter the class scope
+
+  // Check whether we are in class scope (copied from ParseCXXMemberSpecification)
+  bool inClassScope = false;
+
+  if (!ClassStack.empty()) {
+    for (const Scope *S = getCurScope(); S; S = S->getParent()) {
+      if (S->isClassScope()) {
+        inClassScope = true;
+
+        // The Microsoft extension __interface does not permit nested classes.
+        if (getCurrentClass().IsInterface) {
+          Diag(nameLoc, diag::err_invalid_member_in_interface)
+            << /*ErrorType=*/6
+            << cast<NamedDecl>(classDecl.get())->getQualifiedNameAsString();
+        }
+        break;
+      }
+
+      if (S->isFunctionScope()) 
+        break;
+    }
+  }
+
+  {
+    ParseScope classScope(this, Scope::ClassScope|Scope::DeclScope);
+    ParsingClassDefinition ParsingDef(*this, classDecl.get(), !inClassScope, false);
+
+    Actions.ActOnTagStartDefinition(getCurScope(), classDecl.get());
+
+  // 4. Add the base class
+    ParseScope InheritanceScope(this, getCurScope()->getFlags() | Scope::ClassInheritanceScope);
+    BaseResult Base = Actions.ActOnBaseSpecifier(classDecl.get(),
+                                                 SourceRange(BaseLocStart, BaseLocEnd),
+                                                 attrs,
+                                                 false,
+                                                 AS_public,
+                                                 BaseType.get(),
+                                                 BaseLocStart,
+                                                 SourceLocation());
+
+    SmallVector<CXXBaseSpecifier *, 1> BasesList;
+    BasesList.push_back(Base.get());
+    Actions.ActOnBaseSpecifiers(classDecl.get(), BasesList);
+
+    InheritanceScope.Exit();
+
+    Diag(Tok.getLocation(), diag::warn_parsed_coroutine_header); // <<<<<<<<<<<
+
+  // 5. Parse the coroutine body method definition (caches tokens)
+    // Start collecting members for the class
+    Actions.ActOnStartCXXMemberDeclarations(getCurScope(),
+                                            classDecl.get(),
+                                            SourceLocation(), // TODO: Add a valid location here to make the class final
+                                            false,
+                                            nameLoc);
+
+    // Check that it starts with a brace
+    if (Tok.isNot(tok::l_brace)) {
+      Diag(Tok.getLocation(), diag::err_expected_lbrace_after_base_specifiers);
+      return true;
+    }
+
+/////////////////////////////////////
+    SourceLocation bodyOpenLoc = Tok.getLocation();
+
+    unsigned errorId;
+    const char *PrevSpec = nullptr;
+
+
+    // 6.2. Emit the body method
+    {
+      ParsingDeclSpec BodyDS(*this, nullptr);
+      BodyDS.takeAttributesFrom(attrs);
+
+      ParsingDeclarator BodyMethodDecl(*this, BodyDS, DeclaratorContext::MemberContext);
+      DeclaratorScopeObj DeclScopeObj(*this, BodyMethodDecl.getCXXScopeSpec());
+
+      // TODO: when parsing an out of line definition, handle the scope:
+      // DeclScopeObj.EnterDeclaratorScope();
+
+      // Set the return type of the method as the type-specification of the declarator specifier
+      if (BodyDS.SetTypeSpecType(DeclSpec::TST_void, bodyOpenLoc, PrevSpec, errorId, Actions.getPrintingPolicy())) {
+        Diag(bodyOpenLoc, errorId) << PrevSpec;
+      }
+
+      // Set the method name
+      IdentifierInfo& methodName = Actions.Context.Idents.get("_coroutine_body", tok::identifier);
+      BodyMethodDecl.getName().setIdentifier(&methodName, nameLoc);
+
+      // Mark it as a function declarator
+      BodyMethodDecl.AddTypeInfo(
+        DeclaratorChunk::getFunction(/* bool HasProto */ false, // because it has no parameters yet, should change to true when I add parameters
+                                     false,
+                                     nameLoc, // TODO: Put here the start location of the base class
+                                     nullptr, 0, // No params yet. Will have to add the params here
+                                     SourceLocation(), // No ellipses
+                                     SourceLocation(), // // TODO: Put here the end location of the base class
+                                     false,
+                                     SourceLocation(),
+                                     SourceLocation(),
+                                     EST_None, // TODO: Handle exception spec types
+                                     SourceRange(), // TODO: Handle exception spec types
+                                     nullptr, // TODO: Handle exception spec types
+                                     nullptr, // TODO: Handle exception spec types
+                                     0,  // TODO: Handle exception spec types
+                                     nullptr, //  // TODO: Handle exception spec types
+                                     nullptr, // TODO: Handle exception spec types
+                                     ArrayRef<NamedDecl *>(), // No params yet. Will have to add the params here
+                                     nameLoc,
+                                     nameLoc,
+                                     BodyMethodDecl),
+        bodyOpenLoc);
+
+      // For now, don't emit parameters.
+      ParseScope PrototypeScope(this, Scope::FunctionPrototypeScope
+                                    | Scope::DeclScope
+                                    | Scope::FunctionDeclarationScope);
+      PrototypeScope.Exit();
+
+
+      // It's allowed to use `this` in the body
+      Sema::CXXThisScopeRAII ThisScope(Actions,
+                                       dyn_cast<CXXRecordDecl>(Actions.CurContext),
+                                       Qualifiers(),
+                                       true);
+
+      // Note: ParseCXXInlineMethodDef will calls complete on BodyMethodDecl
+      NamedDecl* bodyMethodDecl = 
+        ParseCXXInlineMethodDef(AS_public, // TODO: Make it private
+                                attrs,
+                                BodyMethodDecl,
+                                ParsedTemplateInfo(),
+                                VirtSpecifiers(), // No specifiers - the body is not virtual
+                                SourceLocation()); // << I assume that if PureSpecLoc is invalid, it's missing.
+
+      Diag(Tok.getLocation(), diag::warn_parsed_coroutine_body); // <<<<<<<<<<<
+    }
+
+////////////////////////////////
+
+  // 6. Add the coroutine factory arguments as private members
+
+  // 7. Add the coroutine constructor
+
+  // 8. If this is a top-level coroutine, parse the cached declarations.
+    if (!inClassScope) {
+      ParseLexedAttributes(getCurrentClass());
+      ParseLexedMethodDeclarations(getCurrentClass());
+      Actions.ActOnFinishCXXMemberDecls();
+
+      ParseLexedMemberInitializers(getCurrentClass());
+      ParseLexedMethodDefs(getCurrentClass());
+    }
+
+  // 9. Exit the class scope
+    Actions.ActOnFinishCXXMemberSpecification(getCurScope(),
+                                              nameLoc,
+                                              classDecl.get(),
+                                              bodyOpenLoc,
+                                              Tok.getLocation(),
+                                              attrs);
+
+    if (!inClassScope)
+      Actions.ActOnFinishCXXNonNestedClass(classDecl.get());
+
+    Actions.ActOnTagFinishDefinition(getCurScope(), classDecl.get(), SourceRange(Tok.getLocation(), Tok.getLocation()));
+
+    ParsingDef.Pop();
+    classScope.Exit();
+
+  // 10. Store the generated class in the type-specifier of the current declaration specifiers sequence
+    if (DS.SetTypeSpecType(DeclSpec::TST_class, nameLoc, nameLoc,
+                           PrevSpec, errorId, classDecl.get(), isOwned,
+                           Actions.getPrintingPolicy())) {
+      Diag(bodyOpenLoc, errorId) << PrevSpec;
+      return true;
+    }
+  }
+
+  Diag(Tok.getLocation(), diag::warn_emitted_coroutine_class); // <<<<<<<<<<<
+
+  Token semicolon;
+  semicolon.startToken();
+  semicolon.setKind(tok::semi);
+  UnconsumeToken(semicolon);
+
+  return false;
+
+/*
+warn_emitted_coroutine_constructor
+warn_emitted_coroutine_body
+error_coroutine_semantic_action_failed
+*/
+}
+
+
 /// ParseClassSpecifier - Parse a C++ class-specifier [C++ class] or
 /// elaborated-type-specifier [C++ dcl.type.elab]; we can't tell which
 /// until we reach the start of a definition or see a token that

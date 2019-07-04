@@ -2791,6 +2791,9 @@ private:
   void HandleMemberFunctionDeclDelays(Declarator& DeclaratorInfo,
                                       Decl *ThisDecl);
 
+  bool MaybeParseSymmetricCoroutine(DeclSpec &DS);
+
+
   //===--------------------------------------------------------------------===//
   // C++ 10: Derived classes [class.derived]
   TypeResult ParseBaseTypeSpecifier(SourceLocation &BaseLoc,
