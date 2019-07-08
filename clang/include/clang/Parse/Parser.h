@@ -2791,7 +2791,7 @@ private:
   void HandleMemberFunctionDeclDelays(Declarator& DeclaratorInfo,
                                       Decl *ThisDecl);
 
-  bool MaybeParseSymmetricCoroutine(DeclSpec &DS);
+  bool MaybeParseSymmetricCoroutine(DeclSpec &DS, DeclSpecContext DSContext);
 
 
   //===--------------------------------------------------------------------===//

@@ -1343,19 +1343,29 @@ bool Parser::isValidAfterTypeSpecifier(bool CouldBeBitfield) {
   return false;
 }
 
-bool Parser::MaybeParseSymmetricCoroutine(DeclSpec &DS) {
+bool Parser::MaybeParseSymmetricCoroutine(DeclSpec &DS, DeclSpecContext DSContext) {
   assert(Tok.is(tok::identifier) && "Only call this function at an identifier token");
 
-  if (!getLangOpts().CPlusPlus || NextToken().isNot(tok::l_paren))
+  if (!getLangOpts().CPlusPlus ||
+      NextToken().isNot(tok::l_paren) ||
+      DS.getParsedSpecifiers() != DeclSpec::PQ_None)
     return true;
 
-  // Only accept a coroutine definition where declarations are accepted. Most
-  // notably, don't try to parse the memeber initializers of constructors as
-  // coroutines.
-//  if (!getCurScope()->isFunctionPrototypeScope())  {
-//    return true;
-//  }
+  // To avoid clashes with the memeber initializers of constructors check whether
+  // the identifier is a class name (in which case we assume it's a constructor)
+  // Note: right now, we don't support forward declarations of coroutines, so we
+  // don't need to check for an out-of line constructor.
+  if (Actions.getTypeName(
+      *Tok.getIdentifierInfo(), Tok.getLocation(), getCurScope(), nullptr,
+      /*IsClassName=*/true, false, nullptr,
+      /*IsCtorOrDtorName=*/false,
+      /*NonTrivialTypeSourceInfo=*/true,
+      /*IsClassTemplateDeductionContext*/ isClassTemplateDeductionContext(DSContext), nullptr))
+    return true;
 
+  if (Actions.isDeductionGuideName(getCurScope(), *Tok.getIdentifierInfo(),
+                                   Tok.getLocation()))
+    return true;
   // TODO: Consider treating the coroutine body as a lambda with no captures.
   // If we add the base class syntax to the lambda expression, we can use this
   // to define coroutuine lambda syntax.
@@ -1382,8 +1392,11 @@ bool Parser::MaybeParseSymmetricCoroutine(DeclSpec &DS) {
   ParsedAttributes FirstArgAttrs(AttrFactory);
 
   // TODO: Don't accept elipses (maybe accept them for variadic templates???)
-  if (Tok.isNot(tok::r_paren))
+  if (Tok.isNot(tok::r_paren)) {
+    ParseScope paramsScope(this,
+                           getCurScope()->getFlags() | Scope::FunctionPrototypeScope | Scope::FunctionDeclarationScope);
     ParseParameterDeclarationClause(Params, FirstArgAttrs, ParamInfo, EllipsisLoc);
+  }
 
   if (BDT.consumeClose()) {
     TPA.Revert();
