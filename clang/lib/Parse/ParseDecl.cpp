@@ -3291,7 +3291,7 @@ void Parser::ParseDeclarationSpecifiers(DeclSpec &DS,
         }
       }
 
-      if (Tok.is(tok::identifier) && !MaybeParseSymmetricCoroutine(DS, DSContext))
+      if (Tok.is(tok::identifier) && !MaybeParseSymmetricCoroutine(DS, DSContext, AS))
         goto DoneWithDeclSpec;
 
       // In C++, check to see if this is a scope specifier like foo::bar::, if

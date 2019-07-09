@@ -1343,7 +1343,7 @@ bool Parser::isValidAfterTypeSpecifier(bool CouldBeBitfield) {
   return false;
 }
 
-bool Parser::MaybeParseSymmetricCoroutine(DeclSpec &DS, DeclSpecContext DSContext) {
+bool Parser::MaybeParseSymmetricCoroutine(DeclSpec &DS, DeclSpecContext DSContext, AccessSpecifier AS) {
   assert(Tok.is(tok::identifier) && "Only call this function at an identifier token");
 
   if (!getLangOpts().CPlusPlus ||
@@ -1442,7 +1442,7 @@ bool Parser::MaybeParseSymmetricCoroutine(DeclSpec &DS, DeclSpecContext DSContex
     name, // The name of the class we are generating ...
     nameLoc, // ... and the source location of the name
     attrs, // Class attributes - none for now, we may start accepting them.
-    AS_none, // No access specifier (guess it only matters in a reference to the class, not in its definition)
+    AS, // What;s the access to this declaration inside its declaration context
     DS.getModulePrivateSpecLoc(), // TODO: Something about modules, may need to look into it
     templParams, // Template parameters (TODO: will probably need to look into it when we are specializing or instantiating template coroutines)
     isOwned, // Probably tells us if we own the declaration - i.e. if we should destroy it (TODO: look into it)
