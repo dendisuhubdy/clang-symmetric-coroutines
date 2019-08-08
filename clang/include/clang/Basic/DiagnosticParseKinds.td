@@ -43,6 +43,8 @@ def warn_emitted_coroutine_body : Warning<
   " >>>  Emitted coroutine body!!!  <<< ">;
 def warn_emitted_coroutine_class : Warning<
   " >>>  Emitted coroutine class!!!  <<< ">;
+def warn_processed_coroutine_parameter : Warning<
+  " >>>  Processed coroutine constructor parameter with name %0 and type %1  <<< ">;
 def error_coroutine_semantic_action_failed : Warning<
   " >>>  A semantic action call failed!!!  %0 <<< ">;
 

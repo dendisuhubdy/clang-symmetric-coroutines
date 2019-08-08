@@ -14,6 +14,7 @@
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/DeclTemplate.h"
 #include "clang/AST/PrettyDeclStackTrace.h"
+#include "clang/AST/Stmt.h"
 #include "clang/Basic/Attributes.h"
 #include "clang/Basic/CharInfo.h"
 #include "clang/Basic/OperatorKinds.h"
@@ -1503,8 +1504,6 @@ bool Parser::MaybeParseSymmetricCoroutine(DeclSpec &DS, DeclSpecContext DSContex
 
     InheritanceScope.Exit();
 
-    Diag(Tok.getLocation(), diag::warn_parsed_coroutine_header); // <<<<<<<<<<<
-
   // 5. Parse the coroutine body method definition (caches tokens)
     // Start collecting members for the class
     Actions.ActOnStartCXXMemberDeclarations(getCurScope(),
@@ -1519,7 +1518,6 @@ bool Parser::MaybeParseSymmetricCoroutine(DeclSpec &DS, DeclSpecContext DSContex
       return true;
     }
 
-/////////////////////////////////////
     SourceLocation bodyOpenLoc = Tok.getLocation();
 
     unsigned errorId;
@@ -1591,15 +1589,110 @@ bool Parser::MaybeParseSymmetricCoroutine(DeclSpec &DS, DeclSpecContext DSContex
                                 ParsedTemplateInfo(),
                                 VirtSpecifiers(), // No specifiers - the body is not virtual
                                 SourceLocation()); // << I assume that if PureSpecLoc is invalid, it's missing.
-
-      Diag(Tok.getLocation(), diag::warn_parsed_coroutine_body); // <<<<<<<<<<<
     }
 
-////////////////////////////////
+  // 6. Add the coroutine factory arguments as private members and define the constructor
+    CXXRecordDecl* recordDecl = dyn_cast<CXXRecordDecl>(classDecl.get());
+    SmallVector<QualType, 4> ParamTypes;
 
-  // 6. Add the coroutine factory arguments as private members
+    // Create the constructor type
+    for (const auto& param : ParamInfo) {
+      // TODO: Forbid parameter packs
+      ParamTypes.push_back(dyn_cast<ParmVarDecl>(param.Param)->getTypeSourceInfo()->getType());
+    }
 
-  // 7. Add the coroutine constructor
+    // Create the constructor declaration
+    CanQualType ClassType = Actions.Context.getCanonicalType(Actions.Context.getTypeDeclType(recordDecl));
+    DeclarationName ConstructorName = Actions.Context.DeclarationNames.getCXXConstructorName(ClassType);
+    DeclarationNameInfo ConstructorNameInfo(ConstructorName, nameLoc); 
+
+    QualType funType = Actions.Context.getFunctionType(Actions.Context.VoidTy, ParamTypes, FunctionProtoType::ExtProtoInfo());
+
+    CXXConstructorDecl *Constructor = CXXConstructorDecl::Create(
+         Actions.Context,
+         recordDecl, nameLoc,
+         ConstructorNameInfo, funType, nullptr,
+         ExplicitSpecifier(), true, true,
+         false);
+
+    Constructor->setAccess(AS_public);
+
+    // Create and add the class members, the constructor paramters and the 
+    // member initializers
+    {
+      Sema::SynthesizedFunctionScope ConstructorBody(Actions, Constructor);
+
+      SmallVector<ParmVarDecl*, 4> CtorParams;
+      SmallVector<CXXCtorInitializer*, 4> MemInitializers;
+
+      for (const auto& param : ParamInfo) {
+        // Create a field to store the factory argument
+        ParmVarDecl *ParmVar = dyn_cast<ParmVarDecl>(param.Param);
+
+        FieldDecl *Field = FieldDecl::Create(Actions.Context,
+                                             recordDecl,
+                                             ParmVar->getSourceRange().getBegin(),
+                                             param.IdentLoc,
+                                             param.Ident,
+                                             ParmVar->getOriginalType(),
+                                             ParmVar->getTypeSourceInfo(),
+                                             nullptr, false, ICIS_NoInit);
+
+        Field->setImplicit(true);
+        Field->setAccess(AS_private);
+        recordDecl->addDecl(Field);
+
+        // TODO: For a && argument, generate a value member, not a && one...
+
+        // Create a constructor parameter for the field
+        ParmVarDecl* Param = ParmVarDecl::Create(Actions.Context,
+                                                 Constructor,
+                                                 ParmVar->getLocation(),
+                                                 param.IdentLoc,
+                                                 param.Ident,
+                                                 ParmVar->getTypeSourceInfo()->getType(),
+                                                 ParmVar->getTypeSourceInfo(),
+                                                 SC_None,
+                                                 nullptr);
+
+        CtorParams.push_back(Param);
+
+        // Create an expression that dereferences the argument
+        Expr *InitExpr = Actions.BuildDeclRefExpr(Param,
+                                                  ParmVar->getTypeSourceInfo()->getType(),
+                                                  VK_LValue,
+                                                  ParmVar->getLocation()).get();
+
+        // Create an initializer that assignes the argument to the coprresponding field
+        MemInitResult initializer = Actions.BuildMemberInitializer(Field, InitExpr, param.IdentLoc);
+        MemInitializers.push_back(initializer.get());
+      };
+
+      // TODO: Make the constructor explicit
+
+      // The constructor has the parameters from the coroutine definition
+      Constructor->setParams(CtorParams);
+
+      // Initialize all members with member initializers, not in the constructor body
+      Actions.SetCtorInitializers(Constructor, false, MemInitializers);
+
+      // TODO: Add a statement in the body to pass the coroutine body to the base coroutine class
+      Constructor->setBody(new (Actions.Context) ::clang::CompoundStmt(bodyOpenLoc));
+      Constructor->markUsed(Actions.Context);
+    }
+
+    // TODO: Do I need to delete the implicitly defined constructors???
+/*
+    Scope *S = getScopeForContext(ClassDecl);
+    CheckImplicitSpecialMemberDeclaration(S, DefaultCon);
+
+    if (ShouldDeleteSpecialMember(DefaultCon, CXXDefaultConstructor))
+      SetDeclDeleted(DefaultCon, ClassLoc);
+
+    if (S)
+      PushOnScopeChains(DefaultCon, S, false);
+*/
+    recordDecl->addDecl(Constructor);
 
   // 8. If this is a top-level coroutine, parse the cached declarations.
     if (!inClassScope) {
@@ -1635,8 +1728,6 @@ bool Parser::MaybeParseSymmetricCoroutine(DeclSpec &DS, DeclSpecContext DSContex
       return true;
     }
   }
-
-  Diag(Tok.getLocation(), diag::warn_emitted_coroutine_class); // <<<<<<<<<<<
 
   Token semicolon;
   semicolon.startToken();
