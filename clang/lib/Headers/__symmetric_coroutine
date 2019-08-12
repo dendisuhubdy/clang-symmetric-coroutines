@@ -1,0 +1,85 @@
+// -*- C++ -*-
+//===----------------------------------------------------------------------===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
+#ifndef _LIBCPP__SYMMETRIC_COROUTINE
+#define _LIBCPP__SYMMETRIC_COROUTINE
+
+namespace std {
+
+template<class...> class resume_continuation;
+
+template<class R> class resume_continuation<R(void)> {
+public:
+  R operator()() {}
+};
+
+template<class R, class A> class resume_continuation<R(A)> {
+public:
+  R operator()(A) {}
+};
+
+template<class R, class RR> class resume_continuation<R(void), RR(void)> {
+public:
+  R operator()() {}
+};
+
+template<class R, class RR, class RA>
+class resume_continuation<R(void), RR(RA)> {
+public:
+  R operator()() {}
+};
+
+template<class R, class A, class RR> class resume_continuation<R(A), RR(void)> {
+public:
+  R operator()(A) {}
+};
+
+template<class R, class A, class RR, class RA>
+class resume_continuation<R(A), RR(RA)>{
+public:
+  R operator()(A) {}
+};
+
+template<class...> class coroutine;
+
+template<class R> class coroutine<R(void)> {
+public:
+  R operator()() {}
+};
+
+template<class R, class A> class coroutine<R(A)> {
+public:
+  R operator()(A) {}
+};
+
+template<class R, class RR> class coroutine<R(void), RR(void)> {
+public:
+  R operator()() {}
+};
+
+template<class R, class RR, class RA>
+class coroutine<R(void), RR(RA)> {
+public:
+  R operator()() {}
+};
+
+template<class R, class A, class RR> class coroutine<R(A), RR(void)> {
+public:
+  R operator()(A) {}
+};
+
+template<class R, class A, class RR, class RA>
+class coroutine<R(A), RR(RA)>{
+public:
+  R operator()(A) {}
+};
+
+};
+
+#endif  // _LIBCPP__SYMMETRIC_COROUTINE

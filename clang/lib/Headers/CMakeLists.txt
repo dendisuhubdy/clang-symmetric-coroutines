@@ -94,6 +94,7 @@ set(files
   __stddef_max_align_t.h
   stdint.h
   stdnoreturn.h
+  __symmetric_coroutine
   tbmintrin.h
   tgmath.h
   tmmintrin.h
