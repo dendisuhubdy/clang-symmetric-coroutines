@@ -33,7 +33,7 @@ void use_one_value_param_empty() {
 one_ref_param_empty(int& a) : coroutine<void(void)> {
 }
 
-void use_one_ref_param_empty(int& a) {
+void use_one_ref_param_empty() {
    int a = 0;
    one_ref_param_empty coro{a};
    coro();

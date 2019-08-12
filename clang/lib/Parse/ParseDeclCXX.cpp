@@ -1612,7 +1612,7 @@ bool Parser::MaybeParseSymmetricCoroutine(DeclSpec &DS, DeclSpecContext DSContex
          Actions.Context,
          recordDecl, nameLoc,
          ConstructorNameInfo, funType, nullptr,
-         ExplicitSpecifier(), true, true,
+         ExplicitSpecifier(), false, false,
          false);
 
     Constructor->setAccess(AS_public);
@@ -1659,7 +1659,7 @@ bool Parser::MaybeParseSymmetricCoroutine(DeclSpec &DS, DeclSpecContext DSContex
 
         // Create an expression that dereferences the argument
         Expr *InitExpr = Actions.BuildDeclRefExpr(Param,
-                                                  ParmVar->getTypeSourceInfo()->getType(),
+                                                  ParmVar->getTypeSourceInfo()->getType().getNonReferenceType(),
                                                   VK_LValue,
                                                   ParmVar->getLocation()).get();
 
