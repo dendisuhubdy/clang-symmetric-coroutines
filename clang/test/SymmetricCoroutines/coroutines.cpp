@@ -1,5 +1,4 @@
 // RUN: %clang_cc1 %s -verify
-// XFAIL: *
 
 // Positive tests
 
@@ -44,7 +43,6 @@ one_rv_ref_param_empty(int&& a) : coroutine<void(void)> {
 }
 
 void use_one_rv_ref_param_empty() {
-   int a;
-   one_rv_ref_param_empty coro{a};
+   one_rv_ref_param_empty coro(1);
    coro();
 }

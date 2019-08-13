@@ -1628,21 +1628,27 @@ bool Parser::MaybeParseSymmetricCoroutine(DeclSpec &DS, DeclSpecContext DSContex
       for (const auto& param : ParamInfo) {
         // Create a field to store the factory argument
         ParmVarDecl *ParmVar = dyn_cast<ParmVarDecl>(param.Param);
+        QualType paramType = ParmVar->getTypeSourceInfo()->getType();
+        QualType memberType = paramType;
+        TypeSourceInfo* memberTypeSourceInfo = ParmVar->getTypeSourceInfo();
+
+        if (memberType->isRValueReferenceType()) {
+          memberType = memberType.getNonReferenceType();
+          memberTypeSourceInfo = Actions.Context.getTrivialTypeSourceInfo(memberType);
+        }
 
         FieldDecl *Field = FieldDecl::Create(Actions.Context,
                                              recordDecl,
                                              ParmVar->getSourceRange().getBegin(),
                                              param.IdentLoc,
                                              param.Ident,
-                                             ParmVar->getOriginalType(),
-                                             ParmVar->getTypeSourceInfo(),
+                                             memberType,
+                                             memberTypeSourceInfo,
                                              nullptr, false, ICIS_NoInit);
 
         Field->setImplicit(true);
         Field->setAccess(AS_private);
         recordDecl->addDecl(Field);
-
-        // TODO: For a && argument, generate a value member, not a && one...
 
         // Create a constructor parameter for the field
         ParmVarDecl* Param = ParmVarDecl::Create(Actions.Context,
@@ -1650,7 +1656,7 @@ bool Parser::MaybeParseSymmetricCoroutine(DeclSpec &DS, DeclSpecContext DSContex
                                                  ParmVar->getLocation(),
                                                  param.IdentLoc,
                                                  param.Ident,
-                                                 ParmVar->getTypeSourceInfo()->getType(),
+                                                 paramType,
                                                  ParmVar->getTypeSourceInfo(),
                                                  SC_None,
                                                  nullptr);
@@ -1659,9 +1665,20 @@ bool Parser::MaybeParseSymmetricCoroutine(DeclSpec &DS, DeclSpecContext DSContex
 
         // Create an expression that dereferences the argument
         Expr *InitExpr = Actions.BuildDeclRefExpr(Param,
-                                                  ParmVar->getTypeSourceInfo()->getType().getNonReferenceType(),
+                                                  paramType.getNonReferenceType(),
                                                   VK_LValue,
                                                   ParmVar->getLocation()).get();
+
+        // If the original parameter is an rvalue reference, move it into the
+        // coroutine state.
+        if (paramType->isRValueReferenceType()) {
+          InitExpr = Actions.BuildCXXNamedCast(InitExpr->getBeginLoc(),
+                                               tok::kw_static_cast,
+                                               ParmVar->getTypeSourceInfo(),
+                                               InitExpr,
+                                               ParmVar->getSourceRange(),
+                                               ParmVar->getSourceRange()).get();
+        }
 
         // Create an initializer that assignes the argument to the coprresponding field
         MemInitResult initializer = Actions.BuildMemberInitializer(Field, InitExpr, param.IdentLoc);
