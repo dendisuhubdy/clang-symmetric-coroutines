@@ -1367,6 +1367,7 @@ bool Parser::MaybeParseSymmetricCoroutine(DeclSpec &DS, DeclSpecContext DSContex
   if (Actions.isDeductionGuideName(getCurScope(), *Tok.getIdentifierInfo(),
                                    Tok.getLocation()))
     return true;
+
   // TODO: Consider treating the coroutine body as a lambda with no captures.
   // If we add the base class syntax to the lambda expression, we can use this
   // to define coroutuine lambda syntax.
@@ -1379,7 +1380,6 @@ bool Parser::MaybeParseSymmetricCoroutine(DeclSpec &DS, DeclSpecContext DSContex
   SourceLocation nameLoc = ConsumeToken();
 
   // Consume the parenthesis-enclosed parameter list
-  // TODO: Does this need to be a separate scope???
   BalancedDelimiterTracker BDT(*this, tok::l_paren);
 
   if (BDT.consumeOpen()) {
@@ -1425,40 +1425,19 @@ bool Parser::MaybeParseSymmetricCoroutine(DeclSpec &DS, DeclSpecContext DSContex
   // definitions and we are definitely parsing a coroutine definition.
   TPA.Commit();
 
-  // 2. Start constructing the class definition.
-  CXXScopeSpec &nameScope = DS.getTypeSpecScope();
+  // 2. Constructing the class definition.
   ParsedAttributesWithRange attrs(AttrFactory);
-  MultiTemplateParamsArg templParams;
   bool isOwned = false;
-  bool isDependent = false;
-  Sema::SkipBodyInfo SkipBody;
 
-  // Emit the class "tag"
-  DeclResult classDecl = Actions.ActOnTag(
-    getCurScope(), // The scope (TODO: check what it means)
-    DeclSpec::TST_class, // This is a class ...
-    Sema::TUK_Definition, // ... and we are defining it
-    nameLoc, // This should be the location of the keyword in the source code
-    nameScope, // The scope for a fully qualified name. For now we are not supporting delayed definition.
-    name, // The name of the class we are generating ...
-    nameLoc, // ... and the source location of the name
-    attrs, // Class attributes - none for now, we may start accepting them.
-    AS, // What;s the access to this declaration inside its declaration context
-    DS.getModulePrivateSpecLoc(), // TODO: Something about modules, may need to look into it
-    templParams, // Template parameters (TODO: will probably need to look into it when we are specializing or instantiating template coroutines)
-    isOwned, // Probably tells us if we own the declaration - i.e. if we should destroy it (TODO: look into it)
-    isDependent, // Whether it is a dependent type.
-    SourceLocation(), // The source location of teh enum keyword for enums, not relevant for out case.
-    false, // Enum related - not relevant for this case.
-    clang::TypeResult(), // The underlying type of a class enum - not relevant here.
-    false, // It's not a type specifier
-    false, // It's not a template param or argument
-    &SkipBody); // Will tell us whether to skip parsing the body. Should tell us not.
+  DeclResult classDecl =
+  Actions.ActOnSymmetricCoroutineSignature(DS, name, nameLoc, AS, BaseType.get(),
+                                           SourceRange(BaseLocStart, BaseLocEnd),
+                                           isOwned);
 
   if (!classDecl.isUsable())
     Diag(Tok.getLocation(), diag::error_coroutine_semantic_action_failed) << "Couldn't create the class tag declaration";
-  // 3. Enter the class scope
 
+  // 3. Parse the coroutine body as an inline method of the generated class
   // Check whether we are in class scope (copied from ParseCXXMemberSpecification)
   bool inClassScope = false;
 
@@ -1487,31 +1466,6 @@ bool Parser::MaybeParseSymmetricCoroutine(DeclSpec &DS, DeclSpecContext DSContex
 
     Actions.ActOnTagStartDefinition(getCurScope(), classDecl.get());
 
-  // 4. Add the base class
-    ParseScope InheritanceScope(this, getCurScope()->getFlags() | Scope::ClassInheritanceScope);
-    BaseResult Base = Actions.ActOnBaseSpecifier(classDecl.get(),
-                                                 SourceRange(BaseLocStart, BaseLocEnd),
-                                                 attrs,
-                                                 false,
-                                                 AS_public,
-                                                 BaseType.get(),
-                                                 BaseLocStart,
-                                                 SourceLocation());
-
-    SmallVector<CXXBaseSpecifier *, 1> BasesList;
-    BasesList.push_back(Base.get());
-    Actions.ActOnBaseSpecifiers(classDecl.get(), BasesList);
-
-    InheritanceScope.Exit();
-
-  // 5. Parse the coroutine body method definition (caches tokens)
-    // Start collecting members for the class
-    Actions.ActOnStartCXXMemberDeclarations(getCurScope(),
-                                            classDecl.get(),
-                                            SourceLocation(), // TODO: Add a valid location here to make the class final
-                                            false,
-                                            nameLoc);
-
     // Check that it starts with a brace
     if (Tok.isNot(tok::l_brace)) {
       Diag(Tok.getLocation(), diag::err_expected_lbrace_after_base_specifiers);
@@ -1520,11 +1474,19 @@ bool Parser::MaybeParseSymmetricCoroutine(DeclSpec &DS, DeclSpecContext DSContex
 
     SourceLocation bodyOpenLoc = Tok.getLocation();
 
+    // Start collecting members for the class
+    Actions.ActOnStartCXXMemberDeclarations(getCurScope(),
+                                            classDecl.get(),
+                                            SourceLocation(), // TODO: Add a valid location here to make the class final
+                                            false,
+                                            nameLoc);
+
     unsigned errorId;
     const char *PrevSpec = nullptr;
 
+    NamedDecl *bodyMethodDecl = nullptr;
 
-    // 6.2. Emit the body method
+    // Emit the body method
     {
       ParsingDeclSpec BodyDS(*this, nullptr);
       BodyDS.takeAttributesFrom(attrs);
@@ -1581,137 +1543,21 @@ bool Parser::MaybeParseSymmetricCoroutine(DeclSpec &DS, DeclSpecContext DSContex
                                        Qualifiers(),
                                        true);
 
-      // Note: ParseCXXInlineMethodDef will calls complete on BodyMethodDecl
-      NamedDecl* bodyMethodDecl = 
+      // Note: ParseCXXInlineMethodDef will call complete on BodyMethodDecl
+      bodyMethodDecl = 
         ParseCXXInlineMethodDef(AS_public, // TODO: Make it private
                                 attrs,
                                 BodyMethodDecl,
                                 ParsedTemplateInfo(),
                                 VirtSpecifiers(), // No specifiers - the body is not virtual
-                                SourceLocation()); // << I assume that if PureSpecLoc is invalid, it's missing.
+                                SourceLocation());
     }
 
-  // 6. Add the coroutine factory arguments as private members and define the constructor
-    CXXRecordDecl* recordDecl = dyn_cast<CXXRecordDecl>(classDecl.get());
-    SmallVector<QualType, 4> ParamTypes;
+  // 3. Add the coroutine factory arguments as private members and define the constructor
+    Actions.AddSymmetricCoroutineConstructor(dyn_cast<CXXRecordDecl>(classDecl.get()),
+                                             bodyMethodDecl, ParamInfo);
 
-    // Create the constructor type
-    for (const auto& param : ParamInfo) {
-      // TODO: Forbid parameter packs
-      ParamTypes.push_back(dyn_cast<ParmVarDecl>(param.Param)->getTypeSourceInfo()->getType());
-    }
-
-    // Create the constructor declaration
-    CanQualType ClassType = Actions.Context.getCanonicalType(Actions.Context.getTypeDeclType(recordDecl));
-    DeclarationName ConstructorName = Actions.Context.DeclarationNames.getCXXConstructorName(ClassType);
-    DeclarationNameInfo ConstructorNameInfo(ConstructorName, nameLoc); 
-
-    QualType funType = Actions.Context.getFunctionType(Actions.Context.VoidTy, ParamTypes, FunctionProtoType::ExtProtoInfo());
-
-    CXXConstructorDecl *Constructor = CXXConstructorDecl::Create(
-         Actions.Context,
-         recordDecl, nameLoc,
-         ConstructorNameInfo, funType, nullptr,
-         ExplicitSpecifier(), false, false,
-         false);
-
-    Constructor->setAccess(AS_public);
-
-    // Create and add the class members, the constructor paramters and the 
-    // member initializers
-    {
-      Sema::SynthesizedFunctionScope ConstructorBody(Actions, Constructor);
-
-      SmallVector<ParmVarDecl*, 4> CtorParams;
-      SmallVector<CXXCtorInitializer*, 4> MemInitializers;
-
-      for (const auto& param : ParamInfo) {
-        // Create a field to store the factory argument
-        ParmVarDecl *ParmVar = dyn_cast<ParmVarDecl>(param.Param);
-        QualType paramType = ParmVar->getTypeSourceInfo()->getType();
-        QualType memberType = paramType;
-        TypeSourceInfo* memberTypeSourceInfo = ParmVar->getTypeSourceInfo();
-
-        if (memberType->isRValueReferenceType()) {
-          memberType = memberType.getNonReferenceType();
-          memberTypeSourceInfo = Actions.Context.getTrivialTypeSourceInfo(memberType);
-        }
-
-        FieldDecl *Field = FieldDecl::Create(Actions.Context,
-                                             recordDecl,
-                                             ParmVar->getSourceRange().getBegin(),
-                                             param.IdentLoc,
-                                             param.Ident,
-                                             memberType,
-                                             memberTypeSourceInfo,
-                                             nullptr, false, ICIS_NoInit);
-
-        Field->setImplicit(true);
-        Field->setAccess(AS_private);
-        recordDecl->addDecl(Field);
-
-        // Create a constructor parameter for the field
-        ParmVarDecl* Param = ParmVarDecl::Create(Actions.Context,
-                                                 Constructor,
-                                                 ParmVar->getLocation(),
-                                                 param.IdentLoc,
-                                                 param.Ident,
-                                                 paramType,
-                                                 ParmVar->getTypeSourceInfo(),
-                                                 SC_None,
-                                                 nullptr);
-
-        CtorParams.push_back(Param);
-
-        // Create an expression that dereferences the argument
-        Expr *InitExpr = Actions.BuildDeclRefExpr(Param,
-                                                  paramType.getNonReferenceType(),
-                                                  VK_LValue,
-                                                  ParmVar->getLocation()).get();
-
-        // If the original parameter is an rvalue reference, move it into the
-        // coroutine state.
-        if (paramType->isRValueReferenceType()) {
-          InitExpr = Actions.BuildCXXNamedCast(InitExpr->getBeginLoc(),
-                                               tok::kw_static_cast,
-                                               ParmVar->getTypeSourceInfo(),
-                                               InitExpr,
-                                               ParmVar->getSourceRange(),
-                                               ParmVar->getSourceRange()).get();
-        }
-
-        // Create an initializer that assignes the argument to the coprresponding field
-        MemInitResult initializer = Actions.BuildMemberInitializer(Field, InitExpr, param.IdentLoc);
-        MemInitializers.push_back(initializer.get());
-      };
-
-      // TODO: Make the constructor explicit
-
-      // The constructor has the parameters from the coroutine definition
-      Constructor->setParams(CtorParams);
-
-      // Initialize all members with member initializers, not in the constructor body
-      Actions.SetCtorInitializers(Constructor, false, MemInitializers);
-
-      // TODO: Add a statement in the body to pass the coroutine body to the base coroutine class
-      Constructor->setBody(new (Actions.Context) ::clang::CompoundStmt(bodyOpenLoc));
-      Constructor->markUsed(Actions.Context);
-    }
-
-    // TODO: Do I need to delete the implicitly defined constructors???
-/*
-    Scope *S = getScopeForContext(ClassDecl);
-    CheckImplicitSpecialMemberDeclaration(S, DefaultCon);
-
-    if (ShouldDeleteSpecialMember(DefaultCon, CXXDefaultConstructor))
-      SetDeclDeleted(DefaultCon, ClassLoc);
-
-    if (S)
-      PushOnScopeChains(DefaultCon, S, false);
-*/
-    recordDecl->addDecl(Constructor);
-
-  // 8. If this is a top-level coroutine, parse the cached declarations.
+  // 4. If this is a top-level coroutine, parse the cached declarations.
     if (!inClassScope) {
       ParseLexedAttributes(getCurrentClass());
       ParseLexedMethodDeclarations(getCurrentClass());
@@ -1721,7 +1567,7 @@ bool Parser::MaybeParseSymmetricCoroutine(DeclSpec &DS, DeclSpecContext DSContex
       ParseLexedMethodDefs(getCurrentClass());
     }
 
-  // 9. Exit the class scope
+  // 5. Exit the class scope
     Actions.ActOnFinishCXXMemberSpecification(getCurScope(),
                                               nameLoc,
                                               classDecl.get(),
@@ -1737,7 +1583,7 @@ bool Parser::MaybeParseSymmetricCoroutine(DeclSpec &DS, DeclSpecContext DSContex
     ParsingDef.Pop();
     classScope.Exit();
 
-  // 10. Store the generated class in the type-specifier of the current declaration specifiers sequence
+  // 6. Store the generated class in the type-specifier of the current declaration specifiers sequence
     if (DS.SetTypeSpecType(DeclSpec::TST_class, nameLoc, nameLoc,
                            PrevSpec, errorId, classDecl.get(), isOwned,
                            Actions.getPrintingPolicy())) {
@@ -1752,12 +1598,6 @@ bool Parser::MaybeParseSymmetricCoroutine(DeclSpec &DS, DeclSpecContext DSContex
   UnconsumeToken(semicolon);
 
   return false;
-
-/*
-warn_emitted_coroutine_constructor
-warn_emitted_coroutine_body
-error_coroutine_semantic_action_failed
-*/
 }
 
 

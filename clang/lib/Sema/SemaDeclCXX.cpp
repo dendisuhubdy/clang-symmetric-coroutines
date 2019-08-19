@@ -11072,6 +11072,174 @@ void Sema::ActOnFinishDelayedMemberInitializers(Decl *D) {
   CheckDelayedMemberExceptionSpecs();
 }
 
+DeclResult Sema::ActOnSymmetricCoroutineSignature(DeclSpec &DS,
+                                                  IdentifierInfo *name,
+                                                  SourceLocation nameLoc,
+                                                  AccessSpecifier AS,
+                                                  ParsedType baseType,
+                                                  SourceRange baseTypeRange,
+                                                  bool &isOwned) {
+
+  CXXScopeSpec &nameScope = DS.getTypeSpecScope();
+  AttributeFactory AttrFactory;
+  ParsedAttributes attrs(AttrFactory);
+  MultiTemplateParamsArg templParams;
+  bool isDependent = false;
+  Sema::SkipBodyInfo SkipBody;
+
+  // Create the class node
+
+  // TODO: Handle previous declarations (forward and in enclosing scopes)
+  //  if (DiagnoseClassNameShadow(SearchDC, DeclarationNameInfo(Name, NameLoc)))
+  //    return nullptr;
+  CXXRecordDecl *Class = CXXRecordDecl::Create(Context, TTK_Class, CurContext, nameLoc, nameLoc, name, nullptr);
+  Class->setLexicalDeclContext(CurContext);
+
+  // Set the access specifier.
+  if (CurContext->isRecord())
+    SetMemberAccessSpecifier(Class, nullptr, AS);
+
+  Class->startDefinition();
+
+  Scope *S = getNonFieldDeclScope(getCurScope());
+  PushOnScopeChains(Class, S, true);
+
+  // Add the base type
+  // We haven't yet attached the base specifiers.
+  Class->setIsParsingBaseSpecifiers();
+
+
+  TypeSourceInfo *baseTInfo = nullptr;
+  GetTypeFromParser(baseType, &baseTInfo);
+
+  CXXBaseSpecifier * Base = CheckBaseSpecifier(Class, baseTypeRange, false, AS_public, baseTInfo, SourceLocation());
+  if (Base == nullptr)
+    return true;
+
+  SmallVector<CXXBaseSpecifier *, 1> BasesList;
+  BasesList.push_back(Base);
+  ActOnBaseSpecifiers(Class, BasesList);
+
+  return Class;
+}
+
+// Adds the coroutines creation arguments as members of the class and generates
+// a constructor which initializes them.
+void Sema::AddSymmetricCoroutineConstructor(CXXRecordDecl *Class,
+                                            Decl *Body,
+                                            SmallVectorImpl<DeclaratorChunk::ParamInfo> &Params) {
+  SmallVector<QualType, 4> ParamTypes;
+
+  // Create the constructor type
+  for (const auto& param : Params) {
+    // TODO: Either forbid or handle parameter packs and unnamed parameters
+    ParamTypes.push_back(dyn_cast<ParmVarDecl>(param.Param)->getTypeSourceInfo()->getType());
+  }
+
+  QualType funType = Context.getFunctionType(Context.VoidTy, ParamTypes,
+                                             FunctionProtoType::ExtProtoInfo());
+
+
+  // Create the constructor declaration
+  SourceLocation nameLoc = Class->getSourceRange().getBegin();
+
+  CanQualType ClassType = Context.getCanonicalType(Context.getTypeDeclType(Class));
+  DeclarationName ConstructorName = Context.DeclarationNames.getCXXConstructorName(ClassType);
+  DeclarationNameInfo ConstructorNameInfo(ConstructorName, nameLoc); 
+
+  CXXConstructorDecl *Constructor = CXXConstructorDecl::Create(
+       Context,
+       Class, nameLoc,
+       ConstructorNameInfo, funType, nullptr,
+       ExplicitSpecifier(), false, false,
+       false);
+
+  Constructor->setAccess(AS_public);
+
+  // Create and add the class members, the constructor paramters and the 
+  // member initializers
+  Sema::SynthesizedFunctionScope ConstructorBody(*this, Constructor);
+
+  SmallVector<ParmVarDecl*, 4> CtorParams;
+  SmallVector<CXXCtorInitializer*, 4> MemInitializers;
+
+  for (const auto& param : Params) {
+    // Create a field to store the factory argument
+    ParmVarDecl *ParmVar = dyn_cast<ParmVarDecl>(param.Param);
+    QualType paramType = ParmVar->getTypeSourceInfo()->getType();
+    QualType memberType = paramType;
+    TypeSourceInfo* memberTypeSourceInfo = ParmVar->getTypeSourceInfo();
+
+    if (memberType->isRValueReferenceType()) {
+      memberType = memberType.getNonReferenceType();
+      memberTypeSourceInfo = Context.getTrivialTypeSourceInfo(memberType);
+    }
+
+    FieldDecl *Field = FieldDecl::Create(Context,
+                                         Class,
+                                         ParmVar->getSourceRange().getBegin(),
+                                         param.IdentLoc,
+                                         param.Ident,
+                                         memberType,
+                                         memberTypeSourceInfo,
+                                         nullptr, false, ICIS_NoInit);
+
+    Field->setImplicit(true);
+    Field->setAccess(AS_private);
+    Class->addDecl(Field);
+
+    // Create a constructor parameter for the field
+    ParmVarDecl* ParamDecl = ParmVarDecl::Create(Context,
+                                                 Constructor,
+                                                 ParmVar->getLocation(),
+                                                 param.IdentLoc,
+                                                 param.Ident,
+                                                 paramType,
+                                                 ParmVar->getTypeSourceInfo(),
+                                                 SC_None,
+                                                 nullptr);
+
+    CtorParams.push_back(ParamDecl);
+
+    // Create an expression that dereferences the argument
+    Expr *InitExpr = BuildDeclRefExpr(ParamDecl,
+                                      paramType.getNonReferenceType(),
+                                      VK_LValue,
+                                      ParmVar->getLocation()).get();
+
+    // If the original parameter is an rvalue reference, move it into the
+    // coroutine state.
+    if (paramType->isRValueReferenceType()) {
+      InitExpr = BuildCXXNamedCast(InitExpr->getBeginLoc(),
+                                   tok::kw_static_cast,
+                                   ParmVar->getTypeSourceInfo(),
+                                   InitExpr,
+                                   ParmVar->getSourceRange(),
+                                   ParmVar->getSourceRange()).get();
+    }
+
+    // Create an initializer that assignes the argument to the coprresponding field
+    MemInitResult initializer = BuildMemberInitializer(Field, InitExpr, param.IdentLoc);
+    MemInitializers.push_back(initializer.get());
+  };
+
+  // TODO: Should the constructor be explicit
+
+  // The constructor has the parameters from the coroutine definition
+  Constructor->setParams(CtorParams);
+
+  // Initialize all members with member initializers, not in the constructor body
+  SetCtorInitializers(Constructor, false, MemInitializers);
+
+  // TODO: Add a statement in the body to pass the coroutine body to the base coroutine class
+  Constructor->setBody(new (Context) ::clang::CompoundStmt(nameLoc));
+  Constructor->markUsed(Context);
+
+  Class->addDecl(Constructor);
+
+}
+
+
 /// Find or create the fake constructor we synthesize to model constructing an
 /// object of a derived class via a constructor of a base class.
 CXXConstructorDecl *

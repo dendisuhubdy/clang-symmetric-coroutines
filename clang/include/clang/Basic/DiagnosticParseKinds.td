@@ -33,18 +33,6 @@ def err_asm_goto_not_supported_yet : Error<
 
 let CategoryName = "Parse Issue" in {
 
-def warn_parsed_coroutine_header : Warning<
-  " >>>  Parsed coroutine header!!!  <<< ">;
-def warn_parsed_coroutine_body : Warning<
-  " >>>  Parsed coroutine body!!!  <<< ">;
-def warn_emitted_coroutine_constructor : Warning<
-  " >>>  Emitted coroutine constructor!!!  <<< ">;
-def warn_emitted_coroutine_body : Warning<
-  " >>>  Emitted coroutine body!!!  <<< ">;
-def warn_emitted_coroutine_class : Warning<
-  " >>>  Emitted coroutine class!!!  <<< ">;
-def warn_processed_coroutine_parameter : Warning<
-  " >>>  Processed coroutine constructor parameter with name %0 and type %1  <<< ">;
 def error_coroutine_semantic_action_failed : Warning<
   " >>>  A semantic action call failed!!!  %0 <<< ">;
 

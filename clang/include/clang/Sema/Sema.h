@@ -8767,6 +8767,21 @@ public:
                                            SourceLocation FuncLoc);
 
   //===--------------------------------------------------------------------===//
+  // C++ expreimantal First-class Summetric Coroutines (P1430)
+  //
+  DeclResult ActOnSymmetricCoroutineSignature(DeclSpec &DS,
+                                              IdentifierInfo *name,
+                                              SourceLocation nameLoc,
+                                              AccessSpecifier AS,
+                                              ParsedType baseType,
+                                              SourceRange baseTypeRange,
+                                              bool &isOwned);
+
+  void AddSymmetricCoroutineConstructor(CXXRecordDecl *Class,
+                                        Decl *Body,
+                                        SmallVectorImpl<DeclaratorChunk::ParamInfo> &Params);
+
+  //===--------------------------------------------------------------------===//
   // OpenCL extensions.
   //
 private:
